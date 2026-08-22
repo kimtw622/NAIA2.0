@@ -4486,7 +4486,8 @@ body.character-viewer-result-spotlight:not(:has(#rightTabCharacters.active))::be
 .result-unsaved-actions {
   position: absolute;
   top: 8px;
-  right: 8px;
+  left: 8px;
+  right: auto;
   z-index: 18;
   display: flex;
   gap: 6px;
