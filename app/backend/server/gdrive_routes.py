@@ -62,6 +62,7 @@ IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".avif", "
 LIST_TIMEOUT_SEC = 40
 FETCH_TIMEOUT_SEC = 180
 DAEMON_START_TIMEOUT_SEC = 15
+DAEMON_MARKER = "naia-gdrive-picker"  # rclone rcd 식별용 user-agent (고아 정리에 사용)
 THUMB_SIZE_MIN = 64
 THUMB_SIZE_MAX = 512
 THUMB_SIZE_DEFAULT = 192
@@ -130,6 +131,10 @@ def _cache_dir() -> Path:
 
 def _settings_path() -> Path:
     return _config_dir() / SETTINGS_FILENAME
+
+
+def _pidfile_path() -> Path:
+    return _cache_dir().parent / "gdrive_rclone.pid"
 
 
 def _load_settings() -> dict[str, Any]:
@@ -246,6 +251,13 @@ class _RcloneDaemon:
             proc = self._proc
             self._proc = None
             self._port = 0
+        if proc is not None:
+            # pidfile은 우리가 띄운 데몬의 것일 때만 지운다 (다른 프로세스가 남긴
+            # 고아 데몬 기록은 _kill_stale 이 처리해야 하므로 보존).
+            try:
+                _pidfile_path().unlink()
+            except Exception:
+                pass
         if proc is not None and proc.poll() is None:
             try:
                 proc.terminate()
@@ -255,12 +267,73 @@ class _RcloneDaemon:
                     proc.kill()
                 except Exception:
                     pass
+            print("Headless Remote: gdrive rclone daemon stopped", flush=True)
         if self._log_handle is not None:
             try:
                 self._log_handle.close()
             except Exception:
                 pass
             self._log_handle = None
+
+    @staticmethod
+    def _write_pidfile(pid: int, port: int) -> None:
+        try:
+            _pidfile_path().write_text(f"{pid} {port}\n", encoding="utf-8")
+        except Exception:
+            pass
+
+    @staticmethod
+    def _kill_stale() -> None:
+        """이전 NAIA 프로세스가 남긴 rclone rcd(강제 종료 등)를 정리한다.
+
+        pidfile의 PID가 살아 있고 커맨드라인에 우리 마커가 있을 때만 죽인다
+        (PID 재사용으로 엉뚱한 프로세스를 건드리지 않게).
+        """
+        path = _pidfile_path()
+        try:
+            text = path.read_text(encoding="utf-8").strip()
+        except Exception:
+            return
+        try:
+            pid = int(text.split()[0])
+        except Exception:
+            try:
+                path.unlink()
+            except Exception:
+                pass
+            return
+        if pid <= 1 or pid == os.getpid():
+            return
+        cmdline = ""
+        try:
+            if sys.platform.startswith("win"):
+                out = subprocess.run(
+                    ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=10, check=False,
+                    **_subprocess_kwargs(),
+                ).stdout.decode("utf-8", "replace")
+                cmdline = out if "rclone" in out.lower() else ""
+            else:
+                out = subprocess.run(
+                    ["ps", "-o", "command=", "-p", str(pid)],
+                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=10, check=False,
+                ).stdout.decode("utf-8", "replace")
+                cmdline = out if ("rclone" in out and DAEMON_MARKER in out) else ""
+        except Exception:
+            cmdline = ""
+        if cmdline:
+            try:
+                if sys.platform.startswith("win"):
+                    subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], stdout=subprocess.DEVNULL,
+                                   stderr=subprocess.DEVNULL, timeout=10, check=False, **_subprocess_kwargs())
+                else:
+                    os.kill(pid, 15)
+            except Exception:
+                pass
+        try:
+            path.unlink()
+        except Exception:
+            pass
 
     def _start_locked(self) -> None:
         binary = _rclone_bin()
@@ -269,17 +342,21 @@ class _RcloneDaemon:
                 "rclone을 찾을 수 없습니다. 서버 PC에 rclone을 설치하고 PATH에 두거나 NAIA_RCLONE_BIN을 지정하세요.",
                 503,
             )
+        self._kill_stale()
         port = _free_port()
         password = secrets.token_urlsafe(24)
         args = [
             binary, "rcd",
             "--rc-addr", f"127.0.0.1:{port}",
-            "--rc-user", self._user,
-            "--rc-pass", password,
             "--rc-serve",
             "--rc-job-expire-duration", "1m",
             "--log-level", "NOTICE",
+            "--user-agent", DAEMON_MARKER,
         ]
+        # 자격증명은 인자로 주면 ps/작업관리자에 노출되므로 환경변수로 넘긴다.
+        env = dict(os.environ)
+        env["RCLONE_RC_USER"] = self._user
+        env["RCLONE_RC_PASS"] = password
         log_path = None
         try:
             log_path = _cache_dir().parent / "gdrive_rclone.log"
@@ -294,6 +371,7 @@ class _RcloneDaemon:
                 stdin=subprocess.DEVNULL,
                 stdout=stdout,
                 stderr=subprocess.STDOUT,
+                env=env,
                 **_subprocess_kwargs(),
             )
         except OSError as exc:
@@ -302,6 +380,7 @@ class _RcloneDaemon:
         self._port = port
         self._password = password
         self._binary = binary
+        self._write_pidfile(proc.pid, port)
         deadline = time.monotonic() + DAEMON_START_TIMEOUT_SEC
         last_error: Exception | None = None
         while time.monotonic() < deadline:
@@ -322,7 +401,8 @@ class _RcloneDaemon:
         with self._lock:
             if self._alive():
                 return
-            self.stop()
+            if self._proc is not None:
+                self.stop()
             self._start_locked()
 
     # -- 호출 --
@@ -975,6 +1055,31 @@ def register_gdrive_routes(
         if isinstance(exc, GdriveError):
             return JSONResponse({"ok": False, "error": str(exc)}, status_code=exc.status)
         return JSONResponse({"ok": False, "error": f"{type(exc).__name__}: {exc}"}, status_code=500)
+
+    # 앱 종료 시 데몬도 내린다. uvicorn은 graceful shutdown 뒤 잡아둔 SIGTERM/SIGINT를
+    # 다시 던져 프로세스를 끝내므로 atexit이 실행되지 않는다. 그래서 lifespan 컨텍스트를
+    # 감싸 "application shutdown" 단계에서 정리한다(headless_lifespan.py는 건드리지 않음).
+    try:
+        from contextlib import asynccontextmanager
+
+        router = getattr(app, "router", None)
+        original = getattr(router, "lifespan_context", None)
+        if router is not None and original is not None and not getattr(original, "_naia_gdrive_wrapped", False):
+            @asynccontextmanager
+            async def _lifespan_with_gdrive_cleanup(app_ref):
+                async with original(app_ref) as state:
+                    try:
+                        yield state
+                    finally:
+                        try:
+                            _DAEMON.stop()
+                        except Exception:
+                            pass
+
+            _lifespan_with_gdrive_cleanup._naia_gdrive_wrapped = True  # type: ignore[attr-defined]
+            router.lifespan_context = _lifespan_with_gdrive_cleanup
+    except Exception:
+        pass
 
     @app.get("/api/gdrive/status")
     async def api_gdrive_status():
