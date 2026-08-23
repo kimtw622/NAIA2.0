@@ -910,7 +910,7 @@ const queuePanelReady = import('./js/features/queuePanel.mjs?v=20260520-random-l
   .catch(error => {
     console.error('Failed to initialize queue panel module', error);
   });
-const resultContextMenuReady = import('./js/features/resultContextMenu.mjs?v=20260806-delmode1')
+const resultContextMenuReady = import('./js/features/resultContextMenu.mjs?v=20260823-gdrive1')
   .then(({createResultContextMenu}) => {
     resultContextMenu = createResultContextMenu({
       document,
@@ -926,6 +926,7 @@ const resultContextMenuReady = import('./js/features/resultContextMenu.mjs?v=202
         if (resultImageInput) resultImageInput.pasteFromClipboard();
         else showToast('Image input is not ready', 'error');
       },
+      onGdriveImage: () => openGdriveForResult(),
       onShowMetadata: context => callResultImageAction('showMetadataInTab', context) || false,
       onShowMetadataDetached: openMetadataDetachedFromContext,
       onImageAction: (context, action) => callResultImageAction('requestContextImageAction', context, action),
@@ -1378,6 +1379,41 @@ const grokConnectPanelReady = import('./js/features/grokConnectPanel.mjs?v=20260
     console.error('Failed to initialize grok connect panel module', error);
   });
 // --- Grok I2I 모달 (제거 가능): 우클릭 → 이미지 변형 ---
+// --- Google Drive 이미지 피커 (커스텀 패치, 제거 가능): 업로드 바 'Drive' 버튼 / 우클릭 '드라이브에서 가져오기' ---
+let gdrivePicker = null;
+const gdrivePickerReady = import('./js/features/gdrivePicker.mjs?v=20260823-gdrive1')
+  .then(({createGdrivePicker}) => {
+    gdrivePicker = createGdrivePicker({document, window, fetch, showToast, escHtml});
+  })
+  .catch(error => {
+    console.error('Failed to initialize Google Drive picker module', error);
+  });
+
+// 모듈 업로드 바(Character Reference / Vibe Transfer)에서 드라이브 사진을 골라 기존 업로드 경로로 넘긴다.
+function openGdriveForModule(moduleId) {
+  if (!gdrivePicker) { showToast('Google Drive 피커가 아직 준비되지 않았습니다', 'error'); return; }
+  const titles = {character_reference: 'Google Drive → Character Reference', vibe_transfer: 'Google Drive → Vibe Transfer'};
+  gdrivePicker.open({
+    title: titles[moduleId] || 'Google Drive에서 가져오기',
+    onPick: file => uploadModuleImage(moduleId, file),
+  });
+}
+
+// 결과 뷰어: 드라이브 사진을 골라 "이미지 작업 선택" 팝업(Img2Img/Inpaint/Vibe/히스토리…)으로 보낸다.
+function openGdriveForResult() {
+  if (!gdrivePicker) { showToast('Google Drive 피커가 아직 준비되지 않았습니다', 'error'); return; }
+  gdrivePicker.open({
+    title: 'Google Drive에서 이미지 가져오기',
+    onPick: file => {
+      if (!resultImageInput || typeof resultImageInput.handleImageBlob !== 'function') {
+        showToast('Image input is not ready', 'error');
+        return;
+      }
+      return resultImageInput.handleImageBlob(file, file.name || 'Google Drive Image');
+    },
+  });
+}
+
 let grokI2iModal = null;
 const grokI2iModalReady = import('./js/features/grokI2iModal.mjs?v=20260602-grok14')
   .then(({createGrokI2iModal}) => {
@@ -1744,7 +1780,7 @@ const e621EventPanelReady = import('./js/features/e621EventPanel.mjs?v=20260603-
   .catch(error => {
     console.error('Failed to initialize E621 event panel module', error);
   });
-const imageModulePanelsReady = import('./js/features/imageModulePanels.mjs?v=20260805-cra5')
+const imageModulePanelsReady = import('./js/features/imageModulePanels.mjs?v=20260823-gdrive1')
   .then(({createImageModulePanels}) => {
     imageModulePanels = createImageModulePanels({
       document,
