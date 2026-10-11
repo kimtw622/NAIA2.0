@@ -4855,7 +4855,8 @@ body.character-viewer-result-spotlight:not(:has(#rightTabCharacters.active))::be
 .result-unsaved-actions {
   position: absolute;
   top: 8px;
-  right: 8px;
+  /* CUSTOM: V5 Usage stays on the top-right, so save/delete live top-left. */
+  left: 8px;
   z-index: 18;
   display: flex;
   gap: 6px;
@@ -26550,6 +26551,125 @@ body.interactive-mode .opt-toggle.is-disabled { opacity: 0.38; cursor: not-allow
   background: transparent; color: var(--text-dim); font-size: 10px; cursor: pointer;
 }
 .ia-ref-clear:hover { border-color: var(--border-glow); color: var(--text-primary); }
+
+/* ---- Google Drive 이미지 피커 (커스텀 패치, 제거 가능) ---- */
+.gdrive-overlay {
+  position: fixed; inset: 0; z-index: 4100;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0, 0, 0, 0.62); padding: 20px;
+}
+.gdrive-dialog {
+  width: min(960px, 96vw); height: min(720px, 92vh);
+  display: flex; flex-direction: column;
+  background: var(--bg-surface); color: var(--text-primary);
+  border: 1px solid var(--border-glow); border-radius: 14px;
+  box-shadow: 0 20px 46px rgba(0, 0, 0, 0.55); overflow: hidden;
+  font-family: var(--font-mono);
+}
+.gdrive-header {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 12px 16px; border-bottom: 1px solid var(--border-dim);
+}
+.gdrive-title { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 13px; letter-spacing: 0.03em; min-width: 0; }
+.gdrive-title-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gdrive-logo {
+  display: inline-flex; width: 20px; height: 20px; align-items: center; justify-content: center;
+  border-radius: 5px; font-size: 11px; color: #fff;
+  background: linear-gradient(135deg, #34a853 0 33%, #fbbc04 33% 66%, #4285f4 66%);
+}
+.gdrive-header-actions { display: flex; gap: 4px; }
+.gdrive-icon-btn {
+  background: none; border: 1px solid transparent; color: var(--text-dim); font-size: 17px;
+  line-height: 1; cursor: pointer; padding: 4px 7px; border-radius: 6px;
+}
+.gdrive-icon-btn:hover { color: var(--text-primary); border-color: var(--border-dim); background: var(--bg-deep); }
+.gdrive-x { font-size: 22px; }
+.gdrive-settings {
+  padding: 10px 16px; border-bottom: 1px solid var(--border-dim); background: var(--bg-deep);
+  display: flex; flex-direction: column; gap: 8px; font-size: 11px;
+}
+.gdrive-settings[hidden] { display: none; }
+.gdrive-settings-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; }
+.gdrive-settings-row label { display: flex; flex-direction: column; gap: 4px; color: var(--text-dim); font-size: 10px; flex: 1 1 220px; min-width: 0; }
+.gdrive-settings-row select, .gdrive-settings-row input {
+  background: var(--bg-surface); color: var(--text-primary); border: 1px solid var(--border-dim);
+  border-radius: 6px; padding: 6px 8px; font-size: 12px; font-family: var(--font-mono);
+}
+.gdrive-settings-row select:disabled, .gdrive-settings-row input:disabled { opacity: 0.55; }
+.gdrive-btn {
+  background: var(--accent); color: #fff; border: none; padding: 7px 14px; border-radius: 6px;
+  font-size: 11px; cursor: pointer; font-family: var(--font-mono);
+}
+.gdrive-btn:hover { filter: brightness(1.15); }
+.gdrive-settings-meta, .gdrive-settings-help { color: var(--text-dim); font-size: 10px; line-height: 1.5; }
+.gdrive-settings-meta code, .gdrive-settings-help code { color: var(--text-muted); background: var(--bg-surface); padding: 1px 4px; border-radius: 3px; }
+.gdrive-settings-error { color: #ff8a8a; margin-left: 8px; }
+.gdrive-crumbs {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 2px;
+  padding: 8px 14px; border-bottom: 1px solid var(--border-dim); font-size: 12px;
+}
+.gdrive-crumb {
+  background: none; border: none; color: var(--text-dim); cursor: pointer; padding: 3px 6px;
+  border-radius: 5px; font-family: var(--font-mono); font-size: 12px;
+}
+.gdrive-crumb b { color: var(--text-primary); font-weight: 600; }
+.gdrive-crumb:hover { background: var(--bg-deep); color: var(--text-primary); }
+.gdrive-crumb-sep { color: var(--text-dim); opacity: 0.6; }
+.gdrive-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 12px 14px; }
+.gdrive-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); gap: 10px;
+  transition: opacity 0.15s;
+}
+.gdrive-overlay.is-busy .gdrive-grid { opacity: 0.55; pointer-events: none; }
+.gdrive-item {
+  display: flex; flex-direction: column; align-items: stretch; gap: 5px;
+  background: var(--bg-deep); border: 1px solid var(--border-dim); border-radius: 9px;
+  padding: 8px; cursor: pointer; color: var(--text-primary); text-align: left;
+  font-family: var(--font-mono); min-width: 0;
+}
+.gdrive-item:hover { border-color: var(--accent); box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 50%, transparent); }
+.gdrive-item:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.gdrive-folder { justify-content: center; }
+.gdrive-folder-icon { font-size: 34px; line-height: 1; text-align: center; padding: 14px 0 6px; }
+.gdrive-thumb-wrap {
+  position: relative; width: 100%; aspect-ratio: 1 / 1; overflow: hidden; border-radius: 6px;
+  background:
+    linear-gradient(45deg, rgba(255,255,255,0.04) 25%, transparent 25%, transparent 75%, rgba(255,255,255,0.04) 75%),
+    linear-gradient(45deg, rgba(255,255,255,0.04) 25%, transparent 25%, transparent 75%, rgba(255,255,255,0.04) 75%);
+  background-size: 16px 16px; background-position: 0 0, 8px 8px; background-color: #0d0d14;
+}
+.gdrive-thumb {
+  position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block;
+  opacity: 0; transition: opacity 0.2s;
+}
+.gdrive-thumb.is-loaded { opacity: 1; }
+.gdrive-thumb-wrap::after {
+  content: ''; position: absolute; left: 50%; top: 50%; width: 18px; height: 18px; margin: -9px 0 0 -9px;
+  border: 2px solid var(--border-glow); border-top-color: var(--accent); border-radius: 50%;
+  animation: gdrive-spin 0.9s linear infinite;
+}
+.gdrive-thumb-wrap:has(.is-loaded)::after, .gdrive-thumb-wrap:has(.is-error)::after { display: none; }
+.gdrive-thumb-wrap:has(.is-error) { background-color: #2a1a1f; }
+@keyframes gdrive-spin { to { transform: rotate(360deg); } }
+.gdrive-item-name { font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gdrive-item-meta { font-size: 10px; color: var(--text-dim); }
+.gdrive-empty { grid-column: 1 / -1; padding: 48px 12px; text-align: center; color: var(--text-dim); font-size: 12px; }
+.gdrive-empty-error { color: #ff8a8a; }
+.gdrive-footer {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 8px 16px; border-top: 1px solid var(--border-dim); font-size: 10px; color: var(--text-dim);
+}
+.gdrive-status { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gdrive-status.error { color: #ff8a8a; }
+.gdrive-hint { white-space: nowrap; opacity: 0.75; }
+@media (max-width: 640px) {
+  .gdrive-overlay { padding: 0; }
+  .gdrive-dialog { width: 100vw; height: 100dvh; border-radius: 0; border: none; }
+  .gdrive-grid { grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 8px; }
+  .gdrive-hint { display: none; }
+}
+.mod-btn-gdrive { background: #1f6f45; }
+.mod-btn-gdrive:hover { filter: brightness(1.2); }
 /* 레퍼런스 사용 스위치. 붙여 둔 그림을 **실을지** 정한다 — 백엔드가 이 값을 저장하지
    않아서 프로그램을 다시 켜면 항상 OFF 다(지난 세션 것이 조용히 실리는 사고 방지).
    꺼진 상태를 눈에 띄게 둔다: 붙인 그림은 보이는데 안 실리는 상태라 헷갈리기 쉽다. */

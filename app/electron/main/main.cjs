@@ -14,6 +14,8 @@ const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_BIND_HOST = "0.0.0.0";
 const DEFAULT_PORT = 7243;
 const HEALTH_PATH = "/api/status";
+const NAIA_PROTOCOL = "naia";
+const NAIA_IMPORT_PATH = "/api/integrations/dugeunbot/import";
 const LOG_LIMIT = 1000;
 const PACKAGED_BACKEND_DIR = "naia-backend";
 const ENTRY_QUERY = "desktop_shell=1&electron_shell=1";
@@ -264,6 +266,8 @@ let backendPortConfirmed = false;
 let cachedAppVersion = null;
 let updateCheckPromise = null;
 let updateDownloadPromise = null;
+let pendingNaiaImports = [];
+let processingNaiaImports = false;
 let updateState = {
   phase: "idle", // idle | checking | available | up-to-date | error | downloading | downloaded | applying
   // Source checkouts cannot take the zip download/swap path; the banner shows
@@ -1005,11 +1009,17 @@ function setRuntimeInstallState(state) {
 function httpJsonRequest(targetUrl, options = {}) {
   return new Promise((resolve, reject) => {
     const parsed = new URL(targetUrl);
+    const requestBody = options.json === undefined ? null : JSON.stringify(options.json);
     const req = http.request(parsed, {
       method: options.method || "GET",
       timeout: options.timeoutMs || 10000,
       headers: {
         Accept: "application/json",
+        ...(requestBody ? {
+          "Content-Type": "application/json",
+          "Content-Length": Buffer.byteLength(requestBody),
+        } : {}),
+        ...(options.headers || {}),
       },
     }, (res) => {
       let body = "";
@@ -1038,8 +1048,111 @@ function httpJsonRequest(targetUrl, options = {}) {
       req.destroy(new Error(`Request timed out: ${targetUrl}`));
     });
     req.on("error", reject);
+    if (requestBody) {
+      req.write(requestBody);
+    }
     req.end();
   });
+}
+
+function parseNaiaImportUrl(value) {
+  try {
+    const parsed = new URL(String(value || ""));
+    if (parsed.protocol !== `${NAIA_PROTOCOL}:` || parsed.hostname !== "import") {
+      return null;
+    }
+    if (parsed.search || parsed.hash) {
+      return null;
+    }
+    const token = parsed.pathname.replace(/^\//, "");
+    if (!/^[A-Za-z0-9_-]{20,128}$/.test(token) || token.includes("/")) {
+      return null;
+    }
+    return token;
+  } catch (_error) {
+    return null;
+  }
+}
+
+function naiaImportUrlFromArgv(argv) {
+  for (const value of Array.isArray(argv) ? argv : []) {
+    if (parseNaiaImportUrl(value)) {
+      return String(value);
+    }
+  }
+  return "";
+}
+
+function focusMainWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+  if (!mainWindow.isVisible()) {
+    mainWindow.show();
+  }
+  if (mainWindow.isMinimized()) {
+    mainWindow.restore();
+  }
+  mainWindow.focus();
+}
+
+async function processPendingNaiaImports() {
+  if (processingNaiaImports || !pendingNaiaImports.length || !app.isReady()) {
+    return;
+  }
+  processingNaiaImports = true;
+  try {
+    while (pendingNaiaImports.length) {
+      const token = pendingNaiaImports.shift();
+      try {
+        const url = await ensureBackendReady();
+        const result = await httpJsonRequest(`${url}${NAIA_IMPORT_PATH}`, {
+          method: "POST",
+          json: { token },
+          timeoutMs: 20000,
+        });
+        if (!result || result.ok !== true) {
+          throw new Error(String((result && (result.message || result.error)) || "Import failed"));
+        }
+        appendBackendLog(
+          "shell",
+          `Dugeunbot prompt imported (${Number(result.character_count || 0)} characters).`,
+        );
+      } catch (error) {
+        appendBackendLog("shell", `Dugeunbot prompt import failed: ${error && error.message}`);
+      }
+      focusMainWindow();
+    }
+  } finally {
+    processingNaiaImports = false;
+  }
+}
+
+function queueNaiaImportUrl(value) {
+  const token = parseNaiaImportUrl(value);
+  if (!token) {
+    return false;
+  }
+  if (!pendingNaiaImports.includes(token)) {
+    pendingNaiaImports.push(token);
+  }
+  focusMainWindow();
+  void processPendingNaiaImports();
+  return true;
+}
+
+function registerNaiaProtocol() {
+  if (typeof app.setAsDefaultProtocolClient !== "function") {
+    return false;
+  }
+  if (process.defaultApp && process.argv[1]) {
+    return app.setAsDefaultProtocolClient(
+      NAIA_PROTOCOL,
+      process.execPath,
+      [path.resolve(process.argv[1])],
+    );
+  }
+  return app.setAsDefaultProtocolClient(NAIA_PROTOCOL);
 }
 
 // --- Auto-update -----------------------------------------------------------
@@ -3393,20 +3506,27 @@ function applyInstallLocalUserData() {
 
 applyInstallLocalUserData();
 
+// macOS delivers custom URLs through open-url; Windows/Linux place them in argv
+// on the first launch or in the second-instance argv when NAIA is already open.
+app.on("open-url", (event, url) => {
+  event.preventDefault();
+  queueNaiaImportUrl(url);
+});
+const initialNaiaImportUrl = naiaImportUrlFromArgv(process.argv);
+if (initialNaiaImportUrl) {
+  queueNaiaImportUrl(initialNaiaImportUrl);
+}
+
 const lock = app.requestSingleInstanceLock();
 if (!lock) {
   app.quit();
 } else {
-  app.on("second-instance", () => {
-    if (mainWindow) {
-      if (!mainWindow.isVisible()) {
-        mainWindow.show();
-      }
-      if (mainWindow.isMinimized()) {
-        mainWindow.restore();
-      }
-      mainWindow.focus();
+  app.on("second-instance", (_event, argv) => {
+    const importUrl = naiaImportUrlFromArgv(argv);
+    if (importUrl) {
+      queueNaiaImportUrl(importUrl);
     }
+    focusMainWindow();
   });
 
   app.whenReady().then(async () => {
@@ -3416,6 +3536,7 @@ if (!lock) {
     if (safeModeThisBoot) {
       appendBackendLog("[safe-mode] starting without extensions (one shot)");
     }
+    registerNaiaProtocol();
     configureApplicationMenu();
     configureDownloads();
     repairSwapProbeResidue();
@@ -3423,6 +3544,7 @@ if (!lock) {
     // Resolve the Grok proxy port first so the backend env carries it (multi-instance).
     await resolveGrokProxyPort();
     createMainWindow();
+    void processPendingNaiaImports();
     // Grok(제거 가능): **기본은 꺼짐**(사용자 지정 2026-08-31). API 메뉴에서 '상시
     // 활성' 을 켠 사용자만 부팅 때 프록시를 기동한다.
     //
@@ -3464,6 +3586,8 @@ module.exports.__test = {
   APP_WINDOW_BOUNDS,
   ENTRY_QUERY,
   HIDE_MENU_ENV,
+  NAIA_IMPORT_PATH,
+  NAIA_PROTOCOL,
   REMOTE_DEBUGGING_ENV,
   RUNTIME_INSTALL_FORCE_ENV,
   RUNTIME_INSTALL_SKIP_ENV,
@@ -3492,6 +3616,9 @@ module.exports.__test = {
   isHttpLikeUrl,
   ensureRuntimeInstallReady,
   httpJsonRequest,
+  naiaImportUrlFromArgv,
+  parseNaiaImportUrl,
+  registerNaiaProtocol,
   countRuntimeRequirements,
   openBrowserFallbackUrl,
   packagedPythonExecutable,

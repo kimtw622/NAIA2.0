@@ -530,6 +530,15 @@ export function createCharacterPanel({
     deferredFocusedRenderState = null;
   }
 
+  function prepareAuthoritativeReplace() {
+    // The incoming state is the complete imported collection, not an echo of
+    // the currently focused textarea. Drop focus and any deferred echo so
+    // render() cannot preserve text belonging to the previous image.
+    const focusedTextarea = focusedCharacterTextarea();
+    clearDeferredFocusedRender();
+    if (focusedTextarea) focusedTextarea.blur();
+  }
+
   function queueDeferredFocusedRender(textarea, state) {
     deferredFocusedRenderState = state;
     if (deferredFocusTarget === textarea) return;
@@ -2526,6 +2535,7 @@ export function createCharacterPanel({
     refreshPreview,
     setSlotState,
     renameSlot,
+    prepareAuthoritativeReplace,
     // 프리뷰 창의 [Generate] 가 같은 캐릭터로 다시 뽑을 때 부른다.
     instantGenerate,
     // 결과(또는 오류)가 화면에 닿았다 - 연타 잠금을 푼다.
