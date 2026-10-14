@@ -599,6 +599,53 @@ class HeadlessCharacterService:
         clear_character_roll_snapshot(context, api_mode)
         return self.state()
 
+    def replace_characters(self, characters: list[dict[str, Any]]) -> dict[str, Any]:
+        """Replace the active mode's character slots as one authoritative import.
+
+        Desktop handoffs must not leave stale slots from a previous workspace.  A
+        single save also avoids exposing a half-updated character panel while the
+        base prompt and up to six character prompts are being imported.
+        """
+        from core.character_settings import clear_character_roll_snapshot
+
+        with self._commit_lock:
+            return self._replace_characters_locked(characters, clear_character_roll_snapshot)
+
+    def _replace_characters_locked(self, characters, clear_character_roll_snapshot):
+        context = self.context
+        mode = context.get_api_mode()
+        settings = self.settings_cache()
+        frames = []
+        for item in list(characters or [])[:6]:
+            if not isinstance(item, dict):
+                continue
+            frames.append({
+                "prompt": str(item.get("positive") or ""),
+                "uc": str(item.get("negative") or ""),
+                "is_enabled": True,
+                "slot_state": "active",
+                "is_muted": False,
+                "custom_name": str(item.get("name") or ""),
+            })
+        # Same rule as upstream's bulk "overwrite" since v2.0.49: choose what to
+        # DROP (only the current active slots) instead of what to keep, so the
+        # whole library - history, favorites, groups - survives a full handoff.
+        stored = [f for f in (settings.get("character_frames") or [])
+                  if isinstance(f, dict) and _state_of(f) != "active"]
+        settings["character_frames"] = frames + stored
+        settings["is_active"] = bool(frames)
+
+        prompt_context = getattr(context, "current_prompt_context", None)
+        metadata = getattr(prompt_context, "metadata", None)
+        if isinstance(metadata, dict):
+            metadata.pop("conditional_character_overrides", None)
+            metadata.pop("_conditional_character_slots", None)
+            metadata.pop("conditional_character_skips", None)
+
+        self.save_settings(mode, settings)
+        clear_character_roll_snapshot(context, mode)
+        return self.state()
+
     def set_param(self, key: str, value: Any, *, slot_uuid: str = "") -> dict[str, Any] | None:
         """`slot_uuid` = 화면이 그 명령을 **어느 칸에 대고** 보냈는가(그 칸을 그릴 때의 uuid).
 
