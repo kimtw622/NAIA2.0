@@ -1577,7 +1577,7 @@ function callResultImageAction(methodName, ...args) {
   return method(...args);
 }
 
-const resultImageActionsReady = import('./js/features/resultImageActions.mjs?v=20261012-custom56')
+const resultImageActionsReady = import('./js/features/resultImageActions.mjs?v=20261014-custom56b')
   .then(({createResultImageActions}) => {
     resultImageActions = createResultImageActions({
       document,
@@ -1876,7 +1876,7 @@ const queuePanelReady = import('./js/features/queuePanel.mjs?v=20260520-random-l
   .catch(error => {
     console.error('Failed to initialize queue panel module', error);
   });
-const resultContextMenuReady = import('./js/features/resultContextMenu.mjs?v=20261012-custom56')
+const resultContextMenuReady = import('./js/features/resultContextMenu.mjs?v=20261014-custom56b')
   .then(({createResultContextMenu}) => {
     resultContextMenu = createResultContextMenu({
       document,
@@ -2486,7 +2486,7 @@ const grokConnectPanelReady = import('./js/features/grokConnectPanel.mjs?v=20260
 // --- Grok I2I 모달 (제거 가능): 우클릭 → 이미지 변형 ---
 // --- Google Drive 이미지 피커 (커스텀 패치, 제거 가능): 업로드 바 'Drive' 버튼 / 우클릭 '드라이브에서 가져오기' ---
 let gdrivePicker = null;
-const gdrivePickerReady = import('./js/features/gdrivePicker.mjs?v=20261012-custom56')
+const gdrivePickerReady = import('./js/features/gdrivePicker.mjs?v=20261014-custom56b')
   .then(({createGdrivePicker}) => {
     gdrivePicker = createGdrivePicker({document, window, fetch, showToast, escHtml});
   })
@@ -2789,7 +2789,7 @@ const automationPanelReady = import('./js/features/automationPanel.mjs?v=2026053
   .catch(error => {
     console.error('Failed to initialize automation panel module', error);
   });
-const characterPanelReady = import('./js/features/characterPanel.mjs?v=20261012-custom56')
+const characterPanelReady = import('./js/features/characterPanel.mjs?v=20261014-custom56b')
   .then(({createCharacterPanel}) => {
     characterPanel = createCharacterPanel({
       document,
@@ -3037,7 +3037,7 @@ const e621EventPanelReady = Promise.all([import('./js/features/e621EventPanel.mj
   .catch(error => {
     console.error('Failed to initialize E621 event panel module', error);
   });
-const imageModulePanelsReady = import('./js/features/imageModulePanels.mjs?v=20261012-custom56')
+const imageModulePanelsReady = import('./js/features/imageModulePanels.mjs?v=20261014-custom56b')
   .then(({createImageModulePanels}) => {
     imageModulePanels = createImageModulePanels({
       document,
@@ -4465,6 +4465,24 @@ const statsSave      = $('statsSave');
     childList: true, subtree: true, characterData: true,
   });
   if (typeof ResizeObserver === 'function') new ResizeObserver(sync).observe(island);
+  window.addEventListener('resize', sync);
+  sync();
+})();
+// 커스텀 패치(제거 가능): 저장/삭제 버튼은 V5 Usage 알약의 **왼쪽**에 붙는다(style.css
+// `--nai-usage-pill-w`). 알약 글자가 바뀌면 폭이 변하므로 위 섬과 같은 방식으로 잰다 -
+// 글자 · 숨김 클래스는 MutationObserver, 폰트 · 줌은 ResizeObserver. 숨어 있으면(폭 0) 직전 값을 둔다.
+(() => {
+  const pill = $('naiUsagePill');
+  const viewer = $('resultViewer');
+  if (!pill || !viewer) return;
+  const sync = () => {
+    const width = Math.round(pill.getBoundingClientRect().width);
+    if (width > 0) viewer.style.setProperty('--nai-usage-pill-w', `${width}px`);
+  };
+  new MutationObserver(sync).observe(pill, {
+    attributes: true, attributeFilter: ['class'], childList: true, subtree: true, characterData: true,
+  });
+  if (typeof ResizeObserver === 'function') new ResizeObserver(sync).observe(pill);
   window.addEventListener('resize', sync);
   sync();
 })();

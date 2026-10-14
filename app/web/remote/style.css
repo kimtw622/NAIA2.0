@@ -4855,8 +4855,7 @@ body.character-viewer-result-spotlight:not(:has(#rightTabCharacters.active))::be
 .result-unsaved-actions {
   position: absolute;
   top: 8px;
-  /* CUSTOM: V5 Usage stays on the top-right, so save/delete live top-left. */
-  left: 8px;
+  right: 8px;
   z-index: 18;
   display: flex;
   gap: 6px;
@@ -4865,6 +4864,23 @@ body.character-viewer-result-spotlight:not(:has(#rightTabCharacters.active))::be
 }
 .result-unsaved-actions[hidden] {
   display: none !important;
+}
+/* CUSTOM: V5 Usage stays on the top-right, so save/delete sit just left of it.
+   (커스텀 패치, 제거 가능) 예전에는 버튼을 왼쪽 위로 옮겼는데, 그 자리는 빠른 캐릭터 패널
+   `[ ▸ CHARACTER ]` 머리줄(`.cq-float`, top 40 = 뷰어 기준 9px)이라 버튼이 그것을 통째로 덮었다.
+   알약 폭은 `--` 에서 `162%` · 다중 계정 점까지 바뀌므로 app.js 가 재서 `--nai-usage-pill-w` 로
+   흘려 준다(`--stats-island-w` 와 같은 관용). 알약 right 10 + 폭 + 간격 6. */
+@media (min-width: 768px) {
+  #resultViewer:has(> #naiUsagePill:not(.hidden)) > .result-unsaved-actions {
+    right: calc(16px + var(--nai-usage-pill-w, 96px));
+  }
+}
+/* 모바일은 윗줄에 CHARACTER · USAGE · HISTORY 가 이미 나란히 선다 - 버튼은 그 아랫줄 오른쪽. */
+@media (max-width: 767px) {
+  #resultViewer > .result-unsaved-actions {
+    top: 42px;
+    right: 10px;
+  }
 }
 .result-unsaved-btn {
   position: relative;
