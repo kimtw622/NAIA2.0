@@ -807,6 +807,49 @@ def register_result_display_routes(
             headers={"Content-Disposition": result_images.download_content_disposition(filename)},
         )
 
+    @app.get("/api/result/image/webp")
+    async def api_result_image_webp(source: str = "", path: str = ""):
+        requested_path = str(path or "").strip()
+        normalized_source = str(source or "").strip().lower()
+        item = history_item_from_viewer_path(session_context, path)
+        target = validate_viewer_path(session_context, path)
+        try:
+            if item is not None:
+                webp_bytes = bytes(getattr(item, "webp_bytes", b"") or b"")
+                if not webp_bytes:
+                    raise FileNotFoundError("History image is unavailable")
+                filename = f"{Path(item.filename).stem}.webp"
+            elif target is not None:
+                if target.suffix.lower() == ".webp":
+                    webp_bytes = target.read_bytes()
+                else:
+                    from PIL import Image
+
+                    with Image.open(str(target)) as opened:
+                        opened.load()
+                        image = opened.copy()
+                    buffer = io.BytesIO()
+                    image.save(buffer, format="WEBP", quality=85, method=0)
+                    webp_bytes = buffer.getvalue()
+                filename = f"{target.stem}.webp"
+            elif requested_path or normalized_source == "saved":
+                raise FileNotFoundError("Image not found")
+            else:
+                latest = session_context.result_store.latest_item
+                if latest is None:
+                    raise FileNotFoundError("No image generated yet")
+                webp_bytes = bytes(getattr(latest, "webp_bytes", b"") or b"")
+                if not webp_bytes:
+                    raise FileNotFoundError("History image is unavailable")
+                filename = f"{Path(latest.filename).stem}.webp"
+        except FileNotFoundError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=404)
+        return Response(
+            content=webp_bytes,
+            media_type="image/webp",
+            headers={"Content-Disposition": result_images.download_content_disposition(filename)},
+        )
+
     @app.get("/api/result/image/original")
     async def api_result_image_original(source: str = "", path: str = ""):
         requested_path = str(path or "").strip()

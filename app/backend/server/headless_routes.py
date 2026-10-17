@@ -12,6 +12,7 @@ from app.backend.server.v5_scene_routes import register_v5_scene_routes
 from app.backend.server.snapshot_routes import register_snapshot_routes
 from app.backend.server.data_migration_routes import register_data_migration_routes
 from app.backend.server.danbooru_routes import register_danbooru_routes
+from app.backend.server.dugeunbot_import_routes import register_dugeunbot_import_routes
 from app.backend.server.grok_routes import register_grok_routes  # Grok 연동 (제거 가능)
 from app.backend.server.event_map_routes import register_event_map_routes
 from app.backend.server.event_preset_routes import register_event_preset_routes
@@ -33,6 +34,7 @@ from app.backend.server.install_manager_routes import register_install_manager_r
 from app.backend.server.module_storage_routes import register_module_storage_routes
 from app.backend.server.nai_model_routes import register_nai_model_routes
 from app.backend.server.character_instant_routes import register_character_instant_routes
+from app.backend.server.gdrive_routes import register_gdrive_routes  # Google Drive 피커 (커스텀, 제거 가능)
 from app.backend.server.boost_v2_routes import register_boost_v2_routes
 from app.backend.server.anima_engine_routes import register_anima_engine_routes
 from app.backend.server.comfyui_server_log_routes import register_comfyui_server_log_routes
@@ -215,6 +217,14 @@ def register_headless_routes(
         start_generation_runner=ensure_generation_runner,
     )
     register_install_manager_routes(app, context, run_in_thread=run_in_thread)
+    register_dugeunbot_import_routes(
+        app,
+        context,
+        clients=clients,
+        run_in_thread=run_in_thread,
+        broadcast_json=broadcast_json,
+    )
+    register_gdrive_routes(app, context, run_in_thread=run_in_thread)  # Google Drive 피커 (커스텀, 제거 가능)
     register_extension_install_routes(app, context, run_in_thread=run_in_thread)
     register_boost_v2_routes(app, context, run_in_thread=run_in_thread)
     register_anima_engine_routes(app, context, run_in_thread=run_in_thread)
