@@ -2,6 +2,7 @@ const ACTION_METADATA = 'show_metadata';
 const ACTION_SHOW_PAYLOAD = 'show_payload';     // 우측 팝업: 풀 페이로드를 읽기좋은 HTML로
 const ACTION_SHOW_WILDCARDS = 'show_wildcards';  // 우측 팝업: 블록별 적용 와일드카드(없으면 숨김)
 const ACTION_PASTE_IMAGE = 'paste_image';
+const ACTION_GDRIVE_IMAGE = 'gdrive_image'; // Google Drive 피커 (커스텀, 제거 가능)
 const ACTION_IMAGE_ACTION = 'image_action';
 const ACTION_LOAD_PROMPT = 'load_prompt';
 const ACTION_REROLL_PROMPT = 'reroll_prompt';
@@ -50,6 +51,7 @@ const DEFAULT_CAPABILITIES = {
 
 const MAIN_IMAGE_ACTIONS = [
   {label: '이미지 붙여넣기', action: ACTION_PASTE_IMAGE, alwaysEnabled: true},
+  {label: 'Google Drive에서 가져오기', action: ACTION_GDRIVE_IMAGE, alwaysEnabled: true},
   {label: '파일 위치 열기', action: ACTION_OPEN_LOCATION, capability: 'open_file'},
   {label: '이미지 저장', action: ACTION_SAVE_IMAGE, capability: 'save_image'},
   {label: '클립보드 복사', action: ACTION_COPY_IMAGE, capability: 'copy_png', copyFormat: 'png', badge: 'PNG', badgeTone: 'blue'},
@@ -250,6 +252,7 @@ export function createResultContextMenu({
   showToast = () => {},
   escHtml = defaultEscHtml,
   onPasteImage = () => {},
+  onGdriveImage = null,
   onShowMetadata = null,
   onShowMetadataDetached = null,
   onImageAction = null,
@@ -413,6 +416,9 @@ export function createResultContextMenu({
     }
     if (item.action === ACTION_PASTE_IMAGE) {
       return hasCapability(context, 'paste_image');
+    }
+    if (item.action === ACTION_GDRIVE_IMAGE) {
+      return typeof onGdriveImage === 'function' && hasCapability(context, 'paste_image');
     }
     if (item.action === ACTION_OPEN_LOCATION) {
       return typeof onOpenLocation === 'function';
@@ -708,6 +714,8 @@ export function createResultContextMenu({
           showWildcards(context);
         } else if (action === ACTION_PASTE_IMAGE) {
           onPasteImage();
+        } else if (action === ACTION_GDRIVE_IMAGE) {
+          if (typeof onGdriveImage === 'function') onGdriveImage();
         } else if (action === ACTION_OPEN_LOCATION) {
           onOpenLocation(context);
         } else if (action === ACTION_SAVE_IMAGE) {

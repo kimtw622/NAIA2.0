@@ -607,6 +607,7 @@ export function createImageModulePanels({
     <div class="mod-upload-bar">
       <button class="mod-btn-upload" onclick="document.getElementById('charRefFileInput').click()">Upload</button>
       <button class="mod-btn-upload" onclick="pasteModuleImage('character_reference')">Paste</button>
+      <button class="mod-btn-upload mod-btn-gdrive" onclick="openGdriveForModule('character_reference')" title="Google Drive에서 사진 가져오기">Drive</button>
       <input type="file" id="charRefFileInput" accept="image/*" style="display:none"
         onchange="uploadModuleImage('character_reference',this.files[0]);this.value=''">
       <button class="mod-btn-upload mod-btn-storage" onclick="requestStorage('character_reference')">Storage</button>
@@ -690,6 +691,7 @@ export function createImageModulePanels({
     <div class="mod-upload-bar">
       <button class="mod-btn-upload" onclick="document.getElementById('vibeFileInput').click()">Upload</button>
       <button class="mod-btn-upload" onclick="pasteModuleImage('vibe_transfer')">Paste</button>
+      <button class="mod-btn-upload mod-btn-gdrive" onclick="openGdriveForModule('vibe_transfer')" title="Google Drive에서 사진 가져오기">Drive</button>
       <input type="file" id="vibeFileInput" accept="image/*" style="display:none"
         onchange="uploadModuleImage('vibe_transfer',this.files[0]);this.value=''">
       <button class="mod-btn-upload mod-btn-storage" onclick="requestStorage('vibe_transfer')">Storage</button>

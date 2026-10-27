@@ -1739,7 +1739,7 @@ function callResultImageAction(methodName, ...args) {
   return method(...args);
 }
 
-const resultImageActionsReady = import('./js/features/resultImageActions.mjs?v=20261023-rv1')
+const resultImageActionsReady = import('./js/features/resultImageActions.mjs?v=20261027-custom65')
   .then(({createResultImageActions}) => {
     resultImageActions = createResultImageActions({
       document,
@@ -1749,6 +1749,7 @@ const resultImageActionsReady = import('./js/features/resultImageActions.mjs?v=2
       getMode: () => currentMode || modeSelect.value || 'NAI',
       getWs: () => ws,
       getLatestResultBlob: () => latestResultBlob,
+      getSaveAsWebp: () => Boolean(moduleStateCache.get('auto_save')?.save_as_webp),
       useNativeClipboard: () => canUseHostClipboardBridge,
       getInpaintResize1mp: () => inpaintForce1mp(),
       getPreviewImageUrl: () => (
@@ -2064,7 +2065,7 @@ import('./js/features/downloadDock.mjs?v=20261022-dock1')
     }, 15000);
   })
   .catch(error => console.error('Failed to initialize download dock module', error));
-const resultContextMenuReady = import('./js/features/resultContextMenu.mjs?v=20261023-peq5')
+const resultContextMenuReady = import('./js/features/resultContextMenu.mjs?v=20261027-custom65')
   .then(({createResultContextMenu}) => {
     resultContextMenu = createResultContextMenu({
       document,
@@ -2080,6 +2081,7 @@ const resultContextMenuReady = import('./js/features/resultContextMenu.mjs?v=202
         if (resultImageInput) resultImageInput.pasteFromClipboard();
         else showToast('Image input is not ready', 'error');
       },
+      onGdriveImage: () => openGdriveForResult(),
       onShowMetadata: context => callResultImageAction('showMetadataInTab', context) || false,
       onShowMetadataDetached: openMetadataDetachedFromContext,
       onImageAction: (context, action) => callResultImageAction('requestContextImageAction', context, action),
@@ -2681,6 +2683,41 @@ const grokConnectPanelReady = import('./js/features/grokConnectPanel.mjs?v=20260
     console.error('Failed to initialize grok connect panel module', error);
   });
 // --- Grok I2I 모달 (제거 가능): 우클릭 → 이미지 변형 ---
+// --- Google Drive 이미지 피커 (커스텀 패치, 제거 가능): 업로드 바 'Drive' 버튼 / 우클릭 '드라이브에서 가져오기' ---
+let gdrivePicker = null;
+const gdrivePickerReady = import('./js/features/gdrivePicker.mjs?v=20261027-custom65')
+  .then(({createGdrivePicker}) => {
+    gdrivePicker = createGdrivePicker({document, window, fetch, showToast, escHtml});
+  })
+  .catch(error => {
+    console.error('Failed to initialize Google Drive picker module', error);
+  });
+
+// 모듈 업로드 바(Character Reference / Vibe Transfer)에서 드라이브 사진을 골라 기존 업로드 경로로 넘긴다.
+function openGdriveForModule(moduleId) {
+  if (!gdrivePicker) { showToast('Google Drive 피커가 아직 준비되지 않았습니다', 'error'); return; }
+  const titles = {character_reference: 'Google Drive → Character Reference', vibe_transfer: 'Google Drive → Vibe Transfer'};
+  gdrivePicker.open({
+    title: titles[moduleId] || 'Google Drive에서 가져오기',
+    onPick: file => uploadModuleImage(moduleId, file),
+  });
+}
+
+// 결과 뷰어: 드라이브 사진을 골라 "이미지 작업 선택" 팝업(Img2Img/Inpaint/Vibe/히스토리…)으로 보낸다.
+function openGdriveForResult() {
+  if (!gdrivePicker) { showToast('Google Drive 피커가 아직 준비되지 않았습니다', 'error'); return; }
+  gdrivePicker.open({
+    title: 'Google Drive에서 이미지 가져오기',
+    onPick: file => {
+      if (!resultImageInput || typeof resultImageInput.handleImageBlob !== 'function') {
+        showToast('Image input is not ready', 'error');
+        return;
+      }
+      return resultImageInput.handleImageBlob(file, file.name || 'Google Drive Image');
+    },
+  });
+}
+
 let grokI2iModal = null;
 const grokI2iModalReady = import('./js/features/grokI2iModal.mjs?v=20260602-grok14')
   .then(({createGrokI2iModal}) => {
@@ -2951,7 +2988,7 @@ const automationPanelReady = import('./js/features/automationPanel.mjs?v=2026053
   .catch(error => {
     console.error('Failed to initialize automation panel module', error);
   });
-const characterPanelReady = import('./js/features/characterPanel.mjs?v=20261021-head1')
+const characterPanelReady = import('./js/features/characterPanel.mjs?v=20261027-custom65')
   .then(({createCharacterPanel}) => {
     characterPanel = createCharacterPanel({
       document,
@@ -3280,7 +3317,7 @@ const e621EventPanelReady = Promise.all([import('./js/features/e621EventPanel.mj
   .catch(error => {
     console.error('Failed to initialize E621 event panel module', error);
   });
-const imageModulePanelsReady = import('./js/features/imageModulePanels.mjs?v=20261023-rv1')
+const imageModulePanelsReady = import('./js/features/imageModulePanels.mjs?v=20261027-custom65')
   .then(({createImageModulePanels}) => {
     imageModulePanels = createImageModulePanels({
       document,
@@ -4755,6 +4792,24 @@ const statsSave      = $('statsSave');
     childList: true, subtree: true, characterData: true,
   });
   if (typeof ResizeObserver === 'function') new ResizeObserver(sync).observe(island);
+  window.addEventListener('resize', sync);
+  sync();
+})();
+// 커스텀 패치(제거 가능): 저장/삭제 버튼은 V5 Usage 알약의 **왼쪽**에 붙는다(style.css
+// `--nai-usage-pill-w`). 알약 글자가 바뀌면 폭이 변하므로 위 섬과 같은 방식으로 잰다 -
+// 글자 · 숨김 클래스는 MutationObserver, 폰트 · 줌은 ResizeObserver. 숨어 있으면(폭 0) 직전 값을 둔다.
+(() => {
+  const pill = $('naiUsagePill');
+  const viewer = $('resultViewer');
+  if (!pill || !viewer) return;
+  const sync = () => {
+    const width = Math.round(pill.getBoundingClientRect().width);
+    if (width > 0) viewer.style.setProperty('--nai-usage-pill-w', `${width}px`);
+  };
+  new MutationObserver(sync).observe(pill, {
+    attributes: true, attributeFilter: ['class'], childList: true, subtree: true, characterData: true,
+  });
+  if (typeof ResizeObserver === 'function') new ResizeObserver(sync).observe(pill);
   window.addEventListener('resize', sync);
   sync();
 })();
@@ -13144,6 +13199,13 @@ function guideModelReselect() {
 
 function onModuleState(m) {
   if (seamObserver) seamObserver.watch('module_state', m && m.module_id);
+  if (m?.module_id === 'character' && m.authoritative_replace === true) {
+    // An EXIF/Dugeunbot import is a full replacement. A textarea edit from
+    // the previous image may still be waiting in the 500 ms debounce queue;
+    // cancel it before it can recreate a character that the import cleared.
+    discardPendingModuleEdit('character');
+    characterPanel?.prepareAuthoritativeReplace?.();
+  }
   if (isModuleStateGuarded(m.module_id)) return;
   if (m.module_id === 'prompt_engineering') {
     _presetStampStale = false;      // 새 프리셋 이름이 왔다
@@ -13841,13 +13903,12 @@ function flushPendingModuleEdit(moduleId = null) {
 }
 
 function discardPendingModuleEdit(moduleId = null) {
-  if (!pendingModuleEdit) return;
-  if (moduleId && pendingModuleEdit.moduleId !== moduleId) return;
+  if (moduleId && pendingModuleEdit && pendingModuleEdit.moduleId !== moduleId) return;
   if (moduleSendTimer) {
     clearTimeout(moduleSendTimer);
     moduleSendTimer = null;
   }
-  pendingModuleEdit = null;
+  if (!moduleId || pendingModuleEdit?.moduleId === moduleId) pendingModuleEdit = null;
 }
 
 function setPromptEngineeringOption(key, checked) {
