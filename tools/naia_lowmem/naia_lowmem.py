@@ -55,6 +55,15 @@
     한 번에 하나만 돌고(스캔 22~35초), 문자열 수백만 개가 힙을 조각내 검색 뒤에도 0.2~0.4GB 가 남는다.
     Arrow 에 얹힌 태그 열을 Arrow 안에서 이어 붙여(``binary_join_element_wise``) 행마다 같은 문자열을
     파이썬 객체 없이 만든다. 그 열은 매칭에만 쓰이고 지워지므로 검색 결과는 순정과 같다.
+12. ``search_runtime.filter_source_frame``(4 번과 같은 래퍼) : 이미 앉은 풀 안에서 검색어 · 제외어로 좁힐 때
+    (심층검색 [필터] · 아카이브가 없을 때의 검색) 업스트림은 풀 전체의 태그 문자열을 한 번에 만들어 매칭하고,
+    살아남은 행을 고르며 문자열 열을 통째로 이어 붙인다(820만 행 풀에서 순간 10~17GB). 업스트림
+    ``_apply_filters`` 를 2.5만 행 구간마다 불러 살아남은 자리만 모으고, 그 뒤의 등급 · 태그 id 조건과 인덱스는
+    순정이 하는 차례 그대로 재현한다. 결과가 크면 그 문자열 열을 디스크 사본에 얹어 돌려준다(사본 파일은 매핑한
+    직후 지운다 - 결과가 버려지면 공간도 돌아온다).
+13. ``depth_search_commands._handle_depth_action`` : 심층검색 [열기]가 풀을 두 층(원본 · 현재)으로 깊은 복사하는
+    ``base.copy()`` 네 번을 6 번처럼 얕은 사본으로 고쳐 다시 컴파일한다(숫자 열 두 벌, 820만 행 +0.66GB).
+    v2.0.58 부터 업스트림은 본문을 이 이름으로 옮기고 ``handle_depth_action`` 은 ``pool_busy`` 로 감싸 부르기만 한다.
 
 안전장치: 패치마다 대상 함수의 소스 해시를 검사한다. NAIA 업데이트로 그 함수가 바뀌었으면
 그 패치만 건너뛰고(= 순정 동작) ``cache\\lowmem\\status.json`` 에 사유를 남긴다. 그때는
@@ -69,7 +78,7 @@ import os
 import sys
 import threading
 
-__version__ = "6"
+__version__ = "7"
 
 _OFF = {"0", "false", "no", "off"}
 ENABLED = os.environ.get("NAIA_LOWMEM", "1").strip().lower() not in _OFF
@@ -87,6 +96,11 @@ DRAFT_RUNNER = os.environ.get("NAIA_LOWMEM_RUNNER_DRAFT", "1").strip().lower() n
 # 검색어 · 제외어가 있는 검색에서 태그 문자열을 Arrow 로 이어 붙일지(11 번). 끄면 순정대로 파이썬 문자열로
 # 만든다(스캔이 서너 배 느리고, 검색 뒤에 힙이 0.2~0.4GB 남는다).
 ARROW_TAGS = os.environ.get("NAIA_LOWMEM_ARROW_TAGS", "1").strip().lower() not in _OFF
+# 이미 앉은 풀 안에서 검색어 · 제외어로 좁힐 때(심층검색 · 불러온 셋 안의 검색) 풀을 구간마다 매칭할지(12 번).
+# 끄면 순정대로 풀 전체의 태그 문자열을 한꺼번에 만든다(820만 행 풀에서 순간 10~17GB).
+PIECE_FILTER = os.environ.get("NAIA_LOWMEM_PIECE_FILTER", "1").strip().lower() not in _OFF
+# 그렇게 좁힌 결과가 크면 그 문자열 열을 디스크 사본에 얹어 돌려줄지(12 번). 끄면 결과는 RAM 에 둔다.
+MAP_REFINE = os.environ.get("NAIA_LOWMEM_MAP_REFINE", "1").strip().lower() not in _OFF
 
 # 이 크기보다 작은 parquet 은 매핑하지 않는다(어차피 가볍고, 사본만 늘어난다).
 MIN_SOURCE_BYTES = 32 * 1024 * 1024
@@ -119,8 +133,16 @@ ID_BITMAP_LIMIT = 1 << 27
 DISK_RESERVE_BYTES = 2 * 1024 ** 3
 # 남은 풀이 이보다 적으면 runner parquet 은 순정 함수가 쓴다(10 번) - 이어 붙여도 가볍다(20만 행 = 8MB).
 MIN_RUNNER_ROWS = 200_000
+# 12 번: 풀 안에서 좁힐 때 한 번에 매칭하는 행 수와, 함께 매칭하는 구간 수. 구간 하나에 태그 문자열(행당 500바이트
+# 남짓)과 살아남은 행의 그 문자열이 잠깐 생기므로 이 둘의 곱이 매칭 중의 순간 최고치다. 매칭은 Arrow 안에서 GIL 을
+# 놓고 돌아 구간을 함께 돌릴수록 빨라진다. 2026-10-21 실측(820만 행 풀, 심층검색 [필터] 단계의 시간 · 그 단계 최고치):
+#   `hatsune miku`: 5만 x 1 = 12.1초 · 1.27GB / 5만 x 3 = 4.2~4.6초 · 1.33~1.36GB / 5만 x 6 = 2.5초 · 1.41GB
+#                   / 2.5만 x 6 = 2.2~2.3초 · 1.29~1.30GB
+#   `1girl, solo` : 5만 x 1 = 18.8초 / 5만 x 3 = 8.5~9.8초 · 1.50GB / 2.5만 x 6 = 6.2~6.4초 · 1.50GB
+REFINE_PIECE_ROWS = 25_000
+REFINE_WORKERS = 6
 
-# 대상 함수의 소스 해시(sha256 앞 16자). 검증한 NAIA 버전: v2.0.53.
+# 대상 함수의 소스 해시(sha256 앞 16자). 검증한 NAIA 버전: v2.0.53 - v2.0.65.
 EXPECTED = {
     "core.parquet_chunk_loader:read_parquet_chunked": {"6f9a5a2635368a4f"},
     "core.search_result_model:SearchResultModel._iter_bucketed_frames": {"abb7d7d743f476ad"},
@@ -131,6 +153,9 @@ EXPECTED = {
     "core.headless_search_state_service:HeadlessSearchStateService.restore_last_search": {"0465fbd18056256c"},
     "core.headless_search_state_service:HeadlessSearchStateService.persist_last_search": {"7395bc16287f2984"},
     "app.backend.server.search_runtime:run_search_command": {"b20fa6fd2c9232c6"},
+    # v2.0.58 부터 위 함수에 붙은 데코레이터(호출 내내 `pool_busy` 를 잡는다). 소스 해시는 def 줄부터라 데코레이터가
+    # 들지 않는다 - 재작성할 때 그대로 다시 붙이므로 그 정의를 따로 확인한다(`_KNOWN_DECORATORS`).
+    "app.backend.server.search_runtime:_pool_operation": {"23cba6d07c96efb4"},
     "app.backend.server.search_runtime:_dedup_by_id": {"85105e3de0c7c555"},
     "app.backend.server.search_runtime:search_tag_archive_frame": {"81c8b4846e87fbdf"},
     # 10 번(runner parquet): 첫 둘을 감싸고, 나머지 넷은 그 본문에 기대므로 같이 확인한다.
@@ -144,6 +169,8 @@ EXPECTED = {
     "core.search_engine:SearchEngine._build_tags_string": {"a83a3295d91bbb7a"},
     "core.search_engine:SearchEngine._apply_filters": {"c12243d3ec3792fd"},
     "core.search_engine:SearchEngine.search_in_file": {"fcf1d58947ddcddc"},
+    # 13 번(심층검색 [열기]의 `base.copy()` 네 번). v2.0.65 - v2.0.57 의 `handle_depth_action` 본문과 이름만 다르다.
+    "app.backend.server.depth_search_commands:_handle_depth_action": {"6937d1f652988e68"},
 }
 
 ORIGINALS: dict = {}   # 패치 전 원본 함수 (테스트 · 진단용)
@@ -558,6 +585,13 @@ def _patch_filter_source_frame(module) -> None:
     except Exception:
         deep = True
 
+    # 12 번(검색어 · 제외어가 있으면 구간마다 매칭)은 업스트림 검색 엔진의 두 함수에 기댄다 - 구간마다 그대로 부른다.
+    pieces = (
+        _copy_on_write()
+        and _guard_named("core.search_engine", "SearchEngine._apply_filters")
+        and _guard_named("core.search_engine", "SearchEngine._build_tags_string")
+    )
+
     def filter_source_frame(frame, *, query="", exclude="", ratings=None, tag_ids=None):
         try:
             if (
@@ -576,6 +610,14 @@ def _patch_filter_source_frame(module) -> None:
                 return frame.copy(deep=deep)
         except Exception:
             pass
+        if (query or exclude) and pieces and PIECE_FILTER:
+            try:
+                result = _filter_in_pieces(frame, query, exclude, ratings, tag_ids)
+            except Exception as exc:
+                result = None
+                _refine_note(str(exc) or type(exc).__name__)
+            if result is not None:
+                return result
         return original(frame, query=query, exclude=exclude, ratings=ratings, tag_ids=tag_ids)
 
     filter_source_frame.__doc__ = original.__doc__
@@ -745,6 +787,10 @@ def _shallow_copy_calls(function, variable: str) -> int:
     return rewritten
 
 
+# 재작성하는 함수에 붙어 있어도 되는 업스트림 데코레이터(같은 모듈의 이름). 정의는 `EXPECTED` 의 해시로 확인한다.
+_KNOWN_DECORATORS = {"_pool_operation"}
+
+
 def _function_with_shallow_copies(module, qualname: str, variable: str, expected: int):
     """``module`` 의 ``qualname``(``함수`` 또는 ``클래스.메서드``) 소스에서 ``<variable>.copy()`` 를
     얕은 사본으로 바꿔 컴파일한 함수. 호출이 정확히 ``expected`` 개가 아니면 ValueError - 모르는
@@ -757,8 +803,12 @@ def _function_with_shallow_copies(module, qualname: str, variable: str, expected
     with open(module.__file__, encoding="utf-8") as handle:
         tree = ast.parse(handle.read())
     function = _find_function(tree, qualname)
-    if function.decorator_list:
-        raise ValueError("decorated function")
+    # 데코레이터는 확인한 것만 받아 그대로 둔다 - 컴파일하면 업스트림처럼 그것으로 감싼 함수가 나온다.
+    for decorator in function.decorator_list:
+        if not (isinstance(decorator, ast.Name) and decorator.id in _KNOWN_DECORATORS):
+            raise ValueError("decorated function")
+        if not _guard(module, decorator.id):
+            raise ValueError(f"decorator {decorator.id} changed upstream")
     rewritten = _shallow_copy_calls(function, variable)
     if rewritten != expected:
         raise ValueError(f"expected {expected} `{variable}.copy()` calls, found {rewritten}")
@@ -2259,6 +2309,310 @@ def _patch_search_engine(module) -> None:
     cls._build_tags_string = _build_tags_string
 
 
+# ── 12. 이미 앉은 풀 안에서 검색어로 좁힐 때: 구간마다 매칭한다 ──────────────
+# 심층검색 [필터](`depth_search_commands.apply_depth_filters`)와 아카이브가 없을 때의 [검색](불러온 셋 안에서)은
+# `filter_source_frame(풀, query=…, exclude=…)` 를 부른다. 업스트림은 풀을 깊은 복사한 뒤 `_apply_filters` 에
+# 넘기고, 그 함수는 풀 **전체**의 태그 문자열을 한 번에 만들어 매칭한 다음 살아남은 행을 `df[mask]` 로 고른다.
+# 그 고르기도 크다: pandas 의 take 는 Arrow 문자열 열을 고를 때 열을 통째로 하나로 이어 붙인 뒤에 고른다(600만
+# 행 열 하나에 +1.2GB - 매핑된 풀이어도 그 사본은 RAM 에 생긴다). 2026-10-21 실측(아카이브 전체 검색으로 앉힌
+# 820만 행, 심층검색 [열기] → [필터], 11 번까지 켠 상태 / 순정):
+#   `hatsune miku`(8.6만 행) : 15.5초 · 최고 9.8GB / 순정 44.3초 · 14.6GB
+#   `1girl, solo`(457만 행)  : 24.3초 · 16.8GB, 끝난 뒤에도 결과 3.1GB 가 RAM 에
+#   제외어 `1girl`(257만 행) : 14.3초 · 15.1GB, 결과 2.0GB
+#
+# 여기서는 순정 `_apply_filters` 를 풀의 구간(2.5만 행, 여섯 구간씩 함께)마다 불러 살아남은 자리만 모은다. 같은
+# 측정에서 `hatsune miku` 2.2~2.5초 · 0.66GB, `1girl, solo` 6.2~6.6초 · 0.96GB(결과는 사본에 얹혀 +0.23GB 만 남는다),
+# 제외어 `1girl` 3.5~4.8초 · 0.78GB(13 번 포함 - [열기]의 +0.66GB 가 빠진 값). 순정과 같은 결과인 까닭:
+# - `_apply_filters` 의 판정은 행마다 따로다(검증한 소스): 검색어마다 행별 매칭(Arrow `match_substring` ·
+#   `match_substring_regex`)을 하나의 bool 배열로 AND/OR 해 나가고, 도중에 아무 행도 안 남으면 빈 프레임을
+#   돌려줄 뿐이다(남은 단계는 AND 만 하므로 결과도 비게 된다). 그 문자열은 순정처럼 `_build_tags_string` 이
+#   행마다 만든다(구간에 미리 만들어 넘긴다 - `_apply_filters` 는 그 열이 있으면 그것을 쓴다).
+# - 그 뒤 순정이 하는 일(태그 id · 등급 조건, 마지막 복사)은 고른 행들 위에서 순정과 같은 순서 · 같은 길이로
+#   한다. `df[mask]` 는 전부 True 면 고르지 않고 얕은 사본을 돌려주므로 그것도 따른다. 인덱스는 순정이 단계마다
+#   고른 그대로(`Index.take` 를 같은 차례로)다 - RangeIndex 는 고른 자리가 등간격이면 RangeIndex 로 남는 등
+#   한 번에 고르면 모양이 달라질 수 있다.
+# - 결과가 비었을 때만 순정의 갈래(검색어 단계에서 비어 `iloc[:0]` / 제외어 단계에서 비어 `take([])`)를 구간
+#   결과로 알 수 없다. 두 인덱스가 같으면(풀은 늘 0 부터의 RangeIndex 라 같다) 맡고, 다르면 순정 함수에 넘긴다.
+# - 행은 Arrow 열은 `pc.filter`(청크마다 거른다 - 이어 붙이지 않는다), 나머지 열은 take 로 고른다. 결과가 크면
+#   (MIN_FRAME_BYTES 이상) Arrow 문자열 열을 구간마다 디스크 사본에 흘려 쓰고 매핑해 쓴다. 사본 파일은 매핑한
+#   직후 지운다 - Windows 10 1903 이후 NTFS 는 매핑 중인 파일도 지울 수 있고(이름만 사라진다) 매핑이 풀릴 때
+#   공간이 돌아온다. 그래서 이 결과가 버려지면 사본도 저절로 사라진다. 지우지 못하면 다음에 다시 지워 본다.
+#   새 검색(아카이브가 없을 때의 검색) 안에서도 그렇게 한다 - 그 뒤 8 번이 결과를 풀로 앉히며 사본을 한 번 더
+#   쓰지만(`1girl, solo` 15.4초 → 19.5초) RAM 에 결과를 들고 있지 않아 최고치가 3.8GB → 1.28GB 다. 사본을 쓰지
+#   못하면(디스크 부족 · 쓰기 실패) 결과만 RAM 에 둔다.
+# 위 내용을 보장할 수 없는 프레임(이름이 겹치거나 문자열이 아닌 열 이름, 이미 tags_string 열이 있는 것)과 예외는
+# 순정 함수가 맡는다(그 함수가 내는 결과 · 예외 그대로).
+REFINE_COUNTS = {"pieces": 0, "mapped": 0, "stock": 0}   # 12 번이 맡은 결과 · 그중 디스크에 얹은 것 · 순정에 넘긴 것
+_REFINE_LOCK = threading.Lock()
+_REFINE_TOLD: set = set()                                 # 순정 함수에 넘긴 사유 중 이미 events 에 남긴 것
+_REFINE_LEFTOVERS: list = []                              # 매핑한 채로 지우지 못한 결과 사본(다음에 다시 지워 본다)
+_REFINE_SWEPT = {"done": False}                           # 지난 실행이 남긴 결과 사본을 치웠는가
+
+
+class _NotPieceable(Exception):
+    """이 프레임은 구간마다 걸러 순정과 같은 결과를 낸다고 보장할 수 없다(메시지가 사유)."""
+
+
+def _refine_note(why: str, *, stock: bool = True) -> None:
+    """``stock`` = 순정 함수에 넘겼다(센다) / 아니면 결과를 RAM 에 두었다는 것만 알린다. 사유는 종류마다 한 번."""
+    with _REFINE_LOCK:
+        if stock:
+            REFINE_COUNTS["stock"] += 1
+        tell = why not in _REFINE_TOLD and len(_REFINE_TOLD) < 8
+        if tell:
+            _REFINE_TOLD.add(why)
+    if tell:
+        what = "left to the stock function" if stock else "the result stays in memory"
+        _event(f"narrowing a loaded pool: {what} - {why}")
+
+
+def _same_index(a, b) -> bool:
+    """두 인덱스가 값 · 종류 · 이름 · (RangeIndex 면) 범위까지 같은가."""
+    import pandas as pd
+
+    if not a.identical(b):
+        return False
+    if isinstance(a, pd.RangeIndex):
+        return (a.start, a.stop, a.step) == (b.start, b.stop, b.step)
+    return True
+
+
+def _arrow_backed(column) -> bool:
+    import pyarrow as pa
+
+    return isinstance(getattr(column.array, "_pa_array", None), pa.ChunkedArray) and hasattr(column.dtype, "__from_arrow__")
+
+
+def _picked(series, selected):
+    """``series.take(selected)`` 와 같은 값 · 형의 Series. Arrow 열은 청크마다 거른다(take 는 열을 통째로 잇는다)."""
+    import numpy as np
+    import pandas as pd
+    import pyarrow as pa
+    import pyarrow.compute as pc
+
+    if not _arrow_backed(series):
+        return series.take(selected)
+    mask = np.zeros(len(series), dtype=bool)
+    mask[selected] = True
+    array = series.dtype.__from_arrow__(pc.filter(series.array._pa_array, pa.array(mask)))
+    if type(array) is not type(series.array) or array.dtype != series.dtype or len(array) != len(selected):
+        raise _NotPieceable(f"column {series.name!r} ({series.dtype}) does not come back as it was")
+    return pd.Series(array, index=series.index.take(selected), name=series.name, copy=False)
+
+
+def _drop_refine_files() -> None:
+    """지우지 못했던 결과 사본과, 지난 실행이 남긴 결과 사본(``refine-*.arrow``)을 지워 본다."""
+    if not _REFINE_SWEPT["done"]:
+        _REFINE_SWEPT["done"] = True
+        directory = _cache_dir()
+        try:
+            names = os.listdir(directory) if directory and os.path.isdir(directory) else []
+        except OSError:
+            names = []
+        _REFINE_LEFTOVERS.extend(
+            os.path.join(directory, name) for name in names
+            if name.startswith("refine-") and name.endswith(".arrow"))
+    for path in list(_REFINE_LEFTOVERS):
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+            _REFINE_LEFTOVERS.remove(path)
+        except (OSError, ValueError):
+            pass
+
+
+def _refined_on_disk(work, names, mask, count):
+    """고른 행(``mask``)의 Arrow 문자열 열 ``names`` 를 디스크 사본에 구간마다 흘려 쓰고 매핑해 {열 이름: 배열}.
+    결과가 작거나 디스크가 모자라면 None(= RAM 에서 고른다)."""
+    import shutil
+    import uuid
+
+    import pyarrow as pa
+    import pyarrow.compute as pc
+
+    directory = _cache_dir()
+    if not directory or not names:
+        return None
+    rows = len(work)
+    sources = {name: work[name].array._pa_array for name in names}
+    estimate = sum(source.nbytes for source in sources.values()) * count / rows
+    if estimate < MIN_FRAME_BYTES:
+        return None
+    os.makedirs(directory, exist_ok=True)
+    _drop_refine_files()
+    if shutil.disk_usage(directory).free < estimate * 1.1 + DISK_RESERVE_BYTES:
+        _refine_note("not enough free disk space for a mapped copy", stock=False)
+        return None
+    schema = pa.schema([pa.field(name, sources[name].type) for name in names])
+    path = os.path.join(directory, f"refine-{uuid.uuid4().hex[:16]}.arrow")
+    table = None
+    _WRITING.add(path)
+    try:
+        with pa.OSFile(path, "wb") as sink, pa.ipc.new_file(sink, schema) as writer:
+            for start in range(0, rows, REFINE_PIECE_ROWS):
+                picks = mask[start:start + REFINE_PIECE_ROWS]
+                if not picks.any():
+                    continue
+                picks = pa.array(picks)
+                writer.write_table(pa.table(
+                    {name: pc.filter(sources[name].slice(start, len(picks)), picks) for name in names}, schema=schema))
+        table = _open_mapped(path)
+        if table.num_rows != count or not table.schema.equals(schema):
+            raise OSError("the mapped copy of the result does not hold the chosen rows")
+        columns = {name: table.column(name) for name in names}
+    except BaseException:
+        table = columns = None              # 매핑을 놓아야 지울 수 있다
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        raise
+    finally:
+        _WRITING.discard(path)
+    del table
+    try:
+        os.remove(path)                     # 매핑 중에도 지워진다 - 이 결과가 버려지면 공간도 돌아온다
+    except OSError:
+        _REFINE_LEFTOVERS.append(path)
+    return columns
+
+
+def _refined_frame(work, selected, index, to_disk):
+    """``work`` 의 ``selected`` 자리 행에 ``index`` 를 붙인 프레임(순정이 고른 결과와 같은 값 · 형 · 열 순서)."""
+    import numpy as np
+    import pyarrow as pa
+    import pyarrow.compute as pc
+
+    arrow = [name for name in work.columns if _arrow_backed(work[name])]
+    others = [name for name in work.columns if name not in set(arrow)]
+    result = work[others].take(selected)        # Arrow 가 아닌 열은 이어 붙일 청크가 없다 - 그대로 고른다
+    result.index = index
+    if arrow:
+        mask = np.zeros(len(work), dtype=bool)
+        mask[selected] = True
+        strings = [name for name in arrow
+                   if pa.types.is_large_string(work[name].array._pa_array.type)
+                   or pa.types.is_string(work[name].array._pa_array.type)]
+        on_disk = None
+        if to_disk:
+            try:
+                on_disk = _refined_on_disk(work, strings, mask, len(selected))
+            except Exception as exc:
+                _refine_note(f"could not map it - {exc}", stock=False)    # 사본은 지웠다 - RAM 에서 고른다
+        on_disk = on_disk or {}
+        picks = pa.array(mask)
+        for loc, name in enumerate(work.columns):
+            if name not in arrow:
+                continue
+            source = work[name].array
+            chunked = on_disk[name] if name in on_disk else pc.filter(source._pa_array, picks)
+            array = work[name].dtype.__from_arrow__(chunked)
+            if type(array) is not type(source) or array.dtype != source.dtype or len(array) != len(selected):
+                raise _NotPieceable(f"column {name!r} ({work[name].dtype}) does not come back as it was")
+            result.insert(loc, name, array)
+        if on_disk:
+            with _REFINE_LOCK:
+                REFINE_COUNTS["mapped"] += 1
+    if list(result.columns) != list(work.columns) or list(result.dtypes) != list(work.dtypes) or len(result) != len(selected):
+        raise _NotPieceable("the picked rows do not rebuild the frame")
+    return result
+
+
+def _filter_in_pieces(frame, query, exclude, ratings, tag_ids):
+    """``filter_source_frame(frame, query=…, exclude=…, ratings=…, tag_ids=…)`` 순정과 같은 프레임을, 풀 전체의
+    태그 문자열 없이. 작은 프레임이면 None(순정 함수가 맡는다), 보장할 수 없으면 ``_NotPieceable``."""
+    import numpy as np
+    import pandas as pd
+    from concurrent.futures import ThreadPoolExecutor
+
+    from core.search_engine import SearchEngine
+
+    if not isinstance(frame, pd.DataFrame) or frame.empty or len(frame) < 2 * REFINE_PIECE_ROWS:
+        return None
+    if not frame.columns.is_unique or not all(isinstance(name, str) for name in frame.columns):
+        raise _NotPieceable("column names that are not unique strings")
+    if "tags_string" in frame.columns:
+        raise _NotPieceable("the frame brings its own tags_string column")
+    engine = SearchEngine()
+    tag_columns = list(engine.TAG_COLUMNS)
+    query, exclude = str(query or ""), str(exclude or "")
+    rows = len(frame)
+    # 순정: `filtered = frame.copy()` 에 없는 태그 열을 '' 로 채운다(copy-on-write 라 얕은 사본으로 같다).
+    work = frame.copy(deep=False)
+    for column in tag_columns:
+        if column not in work.columns:
+            work[column] = ""
+    arrays = {name: work[name].array for name in tag_columns}
+
+    def judge(start):
+        stop = min(start + REFINE_PIECE_ROWS, rows)
+        tagged = pd.DataFrame({name: arrays[name][start:stop] for name in tag_columns},
+                              index=pd.RangeIndex(start, stop), copy=False)
+        piece = pd.DataFrame({"tags_string": engine._build_tags_string(tagged)}, copy=False)
+        del tagged
+        positions = engine._apply_filters(piece, query, exclude).index.to_numpy()
+        if len(positions) and (positions[0] < start or positions[-1] >= stop or (np.diff(positions) <= 0).any()):
+            raise _NotPieceable("the stock filter did not keep rows of its piece in order")
+        return positions
+
+    hit = np.zeros(rows, dtype=bool)
+    starts = range(0, rows, REFINE_PIECE_ROWS)
+    workers = ThreadPoolExecutor(max_workers=max(1, min(REFINE_WORKERS, len(starts))), thread_name_prefix="lowmem-refine")
+    try:
+        for positions in workers.map(judge, starts):
+            hit[positions] = True
+    finally:
+        workers.shutdown(wait=True, cancel_futures=True)       # 한 구간이 실패하면 남은 구간은 돌리지 않는다
+
+    # 순정은 살아남은 행을 고른 프레임에 태그 id · 등급 조건을 차례로 걸고(`df[df[열].isin(값)]`) 끝에 복사한다.
+    index = work.index
+    if not hit.any():
+        empty_early, empty_late = index[:0], index.take(np.array([], dtype=np.intp))
+        if not _same_index(empty_early, empty_late):
+            raise _NotPieceable("an empty result whose index depends on where stock stopped")
+        selected, index = np.array([], dtype=np.intp), empty_early
+    elif hit.all():
+        selected = None
+    else:
+        selected = np.flatnonzero(hit)
+        index = index.take(selected)
+    del hit
+    steps = []
+    if tag_ids is not None and "id" in work.columns:
+        steps.append(("id", tag_ids))
+    if ratings and "rating" in work.columns:
+        steps.append(("rating", ratings))
+    for column, values in steps:
+        # 순정은 고른 프레임의 그 열에 isin 을 부른다 - 같은 행 · 같은 형의 열을 만들어 같은 isin 을 부른다.
+        series = work[column] if selected is None else _picked(work[column], selected)
+        keep = np.asarray(series.isin(values), dtype=bool)
+        del series
+        if keep.all():
+            continue
+        chosen = np.flatnonzero(keep)
+        index = index.take(chosen)
+        selected = chosen if selected is None else selected[chosen]
+    if selected is None:
+        result = work.copy()                    # 순정의 마지막 `.copy()` - 문자열 열은 풀의 것 그대로
+    else:
+        result = _refined_frame(work, selected, index, MAP_REFINE)
+    with _REFINE_LOCK:
+        REFINE_COUNTS["pieces"] += 1
+    return result
+
+
+# ── 13. 심층검색을 열 때 풀 두 벌을 얕은 사본으로 ───────────────────────────
+# 심층검색 [열기](와 [메인에서 새로고침])는 풀(snapshot)을 원본 · 현재 두 층으로 `base.copy()` 해 둔다. 문자열 열은
+# Arrow 라 원래 버퍼를 같이 쓰지만 숫자 열이 두 벌 깊은 복사되어(820만 행 +0.66GB) 심층검색 상태가 남아 있는 내내
+# RAM 에 있다. 6 번과 같은 까닭(pandas 3 은 항상 copy-on-write - 얕은 사본도 서로 독립)으로 그 네 호출만 얕은
+# 사본으로 고쳐 다시 컴파일한다. 그 층들은 걸러지고(12 번 · 순정 모두 새 프레임을 만든다) 표본을 뽑고 다시 복사될
+# 뿐, 제자리에서 고쳐지지 않는다(depth_search_commands · generation_commands 확인).
+# 바꿔 끼우는 것은 본문 `_handle_depth_action` 이다 - 바깥의 `handle_depth_action` 은 `pool_busy` 를 잡고 그 본문을 모듈
+# 전역 이름으로 부르므로 그대로 둔다.
+def _patch_depth_search(module) -> None:
+    _patch_shallow_copies(module, "_handle_depth_action", "base", 4)
+
+
 def _patch_search_runtime(module) -> None:
     _patch_filter_source_frame(module)
     _patch_build_tags_text(module)
@@ -2283,6 +2637,7 @@ _PATCHERS = {
     "core.search_result_model": _patch_search_result_model,
     "app.backend.server.search_runtime": _patch_search_runtime,
     "core.search_engine": _patch_search_engine,
+    "app.backend.server.depth_search_commands": _patch_depth_search,
 }
 _PENDING = set(_PATCHERS)
 

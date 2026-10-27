@@ -3,7 +3,7 @@
 백엔드가 검색 풀을 RAM 에 여러 벌 올리지 않게 하는 애드온. 원본과 설명 · 실측 · 동등성 테스트
 (`test_lowmem.py`, `test_lowmem_search.py` - 윈도우 설치본 경로 기준)는
 [kimtw622/naia-custom-patches](https://github.com/kimtw622/naia-custom-patches) 의 `lowmem/` 에 있다.
-여기 두 파일은 그 사본이다(가져온 커밋 `7cebf38`, 모듈 `__version__` "6").
+여기 두 파일은 그 사본이다(키트의 v2.0.65 이식 때 것, 모듈 `__version__` "7". `.pth` 는 저장소의 `*.pth` 무시 규칙에 걸려 `git add -f` 로 넣었다).
 
 - 설치: `tools/naia_lowmem/install.sh` — `naia_lowmem.py` + `naia_lowmem.pth` 를 `venv` 의
   site-packages 로 복사하고 대상 함수의 소스 해시를 찍는다(전부 `ok` 여야 한다).
