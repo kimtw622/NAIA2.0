@@ -6,6 +6,7 @@ export function createResultImageActions({
   getMode = () => 'NAI',
   getWs = () => null,
   getLatestResultBlob = () => null,
+  getSaveAsWebp = () => false,
   useNativeClipboard = () => false,
   getPreviewImageUrl = () => '',
   // 인페인트 진입 해상도 옵션(⚙ 미니 팝업). 기본은 켜짐 = 기존 동작.
@@ -374,6 +375,14 @@ export function createResultImageActions({
     return '';
   }
 
+  function contextImageWebpUrl(context = {}) {
+    const params = new URLSearchParams();
+    const source = String(context.source || (context.path ? 'saved' : 'current')).trim() || 'current';
+    params.set('source', source);
+    if (context.path) params.set('path', context.path);
+    return '/api/result/image/webp?' + params.toString();
+  }
+
   function contextImagePngUrl(context = {}) {
     const params = new URLSearchParams();
     const source = String(context.source || (context.path ? 'saved' : 'current')).trim() || 'current';
@@ -537,6 +546,14 @@ export function createResultImageActions({
       }
       return response.blob();
     }
+    if (format === 'webp') {
+      const response = await fetch(contextImageWebpUrl(context), {cache: 'no-store'});
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.error || `HTTP ${response.status}`);
+      }
+      return response.blob();
+    }
     const imageUrl = contextImageUrl(context);
     if (!imageUrl) throw new Error('Result image is unavailable');
     const latestResultBlob = getLatestResultBlob();
@@ -567,14 +584,15 @@ export function createResultImageActions({
     window.setTimeout(() => window.URL.revokeObjectURL(url), 1000);
   }
 
-  async function pickPngSaveHandle(filename) {
+  async function pickImageSaveHandle(filename, format) {
     if (typeof window.showSaveFilePicker !== 'function') return false;
+    const saveAsWebp = format === 'webp';
     try {
       return await window.showSaveFilePicker({
         suggestedName: filename,
         types: [{
-          description: 'PNG image',
-          accept: {'image/png': ['.png']},
+          description: saveAsWebp ? 'WEBP image' : 'PNG image',
+          accept: saveAsWebp ? {'image/webp': ['.webp']} : {'image/png': ['.png']},
         }],
       });
     } catch (error) {
@@ -597,10 +615,11 @@ export function createResultImageActions({
 
   async function saveImageFromContext(context = {}) {
     try {
-      const filename = filenameFromContext(context, 'png');
-      const saveHandle = await pickPngSaveHandle(filename);
+      const format = getSaveAsWebp() ? 'webp' : 'png';
+      const filename = filenameFromContext(context, format);
+      const saveHandle = await pickImageSaveHandle(filename, format);
       if (saveHandle === null) return;
-      const blob = await fetchContextImageBlob(context, {format: 'png'});
+      const blob = await fetchContextImageBlob(context, {format});
       if (saveHandle) {
         try {
           await writeBlobToFileHandle(saveHandle, blob);
